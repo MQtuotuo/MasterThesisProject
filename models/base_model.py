@@ -32,6 +32,7 @@ from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import StratifiedKFold
 
 
 
@@ -59,34 +60,43 @@ class BaseModel(object):
         self.freeze_top_layers()
 
         # for regression task
-        self.model.compile(loss='mean_squared_error', metrics=['mae'], optimizer=Adam(lr=1.0e-5))
+        #self.model.compile(loss='mean_squared_error', metrics=['mae'], optimizer=Adam(lr=1.0e-5))
         #self.model.compile(loss=self.huber_loss, metrics=['mae'], optimizer='adam')
         #self.model.load_weights(config.get_fine_tuned_weights_path())
 
         #X_train, y_train, X_test, y_test = self.getData()
-        X, y= self.getData()
-
-        # define data generation
-        datagen = ImageDataGenerator(rotation_range=30, height_shift_range=0.01, horizontal_flip=True)
-
-        # fit parameters from data
-        datagen.fit(X)
-
-        callbacks = self.get_callbacks(config.get_fine_tuned_weights_path())
-        print(callbacks)
-
+        X, Y= self.getData()
+   
         np.random.seed(seed)
+       
 
         kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-        cvscores = []
+        CVscores = []
         for train, test in kfold.split(X, Y):
+           
+            callbacks = self.get_callbacks(config.get_fine_tuned_weights_path())
+            self.model.compile(loss='mean_squared_error', metrics=['mae'], optimizer=Adam(lr=1.0e-5))
             # Fit the model
-            self.model.fit(X[train], Y[train], epochs=self.nb_epoch, batch_size=self.batch_size, callbacks=callbacks)
+            # fits the model on batches with real-time data augmentation:
+            train_data = self.get_train_datagen(X[train], Y[train])
+            valid_data = self.get_validation_datagen(X[test], Y[test])
+            self.model.fit_generator(
+                train_data,
+                steps_per_epoch=len(X[train]) / float(self.batch_size), 
+                validation_data=valid_data,
+                validation_steps=len(X[test]) / float(self.batch_size),
+                epochs=self.nb_epoch, 
+                callbacks=callbacks)
+
+            #self.model.fit(X[train], Y[train], epochs=self.nb_epoch, batch_size=self.batch_size, validation_split=0.2, callbacks=callbacks)
             # evaluate the model
-            scores = model.evaluate(X[test], Y[test], verbose=0)
-            print("%s: %.2f%%" % (model.metrics_names[1], scores[1]*100))
-            cvscores.append(scores[1] * 100)
-            print("%.2f%% (+/- %.2f%%)" % (np.mean(cvscores), np.std(cvscores)))
+            scores = self.model.evaluate(X[test], Y[test], verbose=0)
+            CVscores.append(score)
+            print("validation MSE: ", score)
+        CVmean = np.mean(CVscores)
+        CVstd = np.std(CVscores)
+        CVpct = 100 * CVstd / CVmean
+        print("For " + str(n_fold) + "-fold CV, avg MSE: " + format(CVmean, '.4f') +", std dev of MSE: " + format(CVstd, '.4f') +" (" + format(CVpct,'.2f') + "%)")
 
         '''
         history = self.model.fit(
@@ -141,7 +151,7 @@ class BaseModel(object):
 
         PATH = '/home/ming/workspace.old/RSNA.boneage'
         # Define data path
-        data_path = PATH + '/RSNA'
+        data_path = PATH + '/train'
         # print(data_path)
         img_path = '/home/ming/workspace.old/unet/output'
 
@@ -242,13 +252,15 @@ class BaseModel(object):
         if self.gender == 'M':
             for index, row in dataframe.iterrows():
                 if row['male'] == 1:  # all the male
-                    filepath_temp = os.path.join(img_path + '/' + str(row['id']) + '_new.png')
+                    filepath_temp = os.path.join(data_path + '/' + str(row['id']) + '.png')
                     image = cv2.imread(filepath_temp, 0)
                     
-                    #img = resizeToFit(image, (224, 224, 3))
-                    #img = postprocessing(img)
+                    img = resizeToFit(image, (512, 512))
+                    img = clahe_augment(img)
+                    img = contrast_augment(img)
+                    img = postprocessing(img)
                     #cropped = img[x:w, y:h]      
-                    img = preprocessing(image)
+                    #img = preprocessing(image)
                     img_male_list.append(img)
                     y_male.append(row['boneage'])
 
@@ -363,7 +375,7 @@ class BaseModel(object):
     @staticmethod
     def get_callbacks(weights_path, monitor='val_loss'):
         model_checkpoint = ModelCheckpoint(weights_path, save_best_only=True, save_weights_only=True, monitor=monitor)
-        csv_logger = CSVLogger('log_resnetpreprocess.csv', append=True, separator=',')
+        csv_logger = CSVLogger('log_resnetoriginalcv.csv', append=True, separator=',')
         tensorboard = TensorBoard(log_dir='./logs', histogram_freq=0, batch_size=32, write_graph=True,
                                   write_grads=False,
                                   write_images=False, embeddings_freq=0, embeddings_layer_names=None,
@@ -416,3 +428,19 @@ class BaseModel(object):
             return T.switch(condition, squared_loss, linear_loss)
         else:
             raise RuntimeError('Unknown backend "{}".'.format(K.backend()))
+
+
+    def get_train_datagen(self, X_train, y_train):
+        idg = ImageDataGenerator(rotation_range=30, height_shift_range=0.01, horizontal_flip=True)
+        self.apply_mean(idg)
+        return idg.flow(X_train, y_train, batch_size=self.batch_size)
+
+    def get_validation_datagen(self, X_test, y_test):
+        idg = ImageDataGenerator()
+        self.apply_mean(idg)
+        return idg.flow(X_test, y_test, batch_size=self.batch_size)
+
+
+
+
+
