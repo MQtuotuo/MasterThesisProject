@@ -33,6 +33,8 @@ from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold
+from data import load_train_data, load_test_data
+from preprocessing import preprocessing, postprocessing, clahe_augment, contrast_augment
 
 
 
@@ -60,11 +62,12 @@ class BaseModel(object):
         self.freeze_top_layers()
 
         # for regression task
-        #self.model.compile(loss='mean_squared_error', metrics=['mae'], optimizer=Adam(lr=1.0e-5))
+        self.model.compile(loss='mean_squared_error', metrics=['mae'], optimizer=Adam(lr=1.0e-5))
         #self.model.compile(loss=self.huber_loss, metrics=['mae'], optimizer='adam')
         #self.model.load_weights(config.get_fine_tuned_weights_path())
 
         #X_train, y_train, X_test, y_test = self.getData()
+        '''
         X, Y= self.getData()
    
         np.random.seed(seed)
@@ -91,20 +94,31 @@ class BaseModel(object):
             #self.model.fit(X[train], Y[train], epochs=self.nb_epoch, batch_size=self.batch_size, validation_split=0.2, callbacks=callbacks)
             # evaluate the model
             scores = self.model.evaluate(X[test], Y[test], verbose=0)
-            CVscores.append(score)
-            print("validation MSE: ", score)
+            CVscores.append(scores)
+            print("validation MSE: ", scores)
         CVmean = np.mean(CVscores)
         CVstd = np.std(CVscores)
         CVpct = 100 * CVstd / CVmean
         print("For " + str(n_fold) + "-fold CV, avg MSE: " + format(CVmean, '.4f') +", std dev of MSE: " + format(CVstd, '.4f') +" (" + format(CVpct,'.2f') + "%)")
 
         '''
-        history = self.model.fit(
-                X_train, y_train,
-                batch_size = self.batch_size,
+
+        X, Y= self.getData()
+        X, Y = shuffle(X, Y, random_state=seed)
+
+        # Split the dataset
+        X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.2, random_state=seed)  
+
+        train_data = self.get_train_datagen(X_train, y_train)
+        valid_data = self.get_validation_datagen(X_test, y_test)
+        callbacks = self.get_callbacks(config.get_fine_tuned_weights_path())
+
+        history = self.model.fit_generator(
+                train_data,
+                steps_per_epoch=len(X_train) / float(self.batch_size), 
+                validation_data=valid_data,
+                validation_steps=len(X_test) / float(self.batch_size),
                 epochs=self.nb_epoch,
-                validation_data=(X_test, y_test),
-                #validation_data=(X_valid, y_valid),
                 callbacks=callbacks)
         
        
@@ -133,7 +147,7 @@ class BaseModel(object):
         print ("Model R^2 (test data): ", r2_score(self.model.predict(X_test), y_test))
         #print ("Model R^2 (valid data): ", r2_score(self.model.predict(X_valid), y_valid))
         print ("Model R^2 (train data): ", r2_score(self.model.predict(X_train), y_train))
-        '''
+        
 
 
     def train(self):
@@ -146,195 +160,54 @@ class BaseModel(object):
         #print("Classes are saved")
 
 
+    def preprocess_image(imgs):
+        imgs_p = np.ndarray((imgs.shape[0], img_rows, img_cols, 3), dtype=np.uint8)
+        for i in range(imgs.shape[0]):
+            #imgs_p[i] = resize(imgs[i], (img_rows, img_cols), preserve_range=True)
+            img = clahe_augment(img)
+            img = contrast_augment(img)
+            img = postprocessing(img, self.imageShape)
+            imgs_p[i] = img
+
+        imgs_p = imgs_p[..., np.newaxis]
+        return imgs_p
 
     def getData(self, ):
 
-        PATH = '/home/ming/workspace.old/RSNA.boneage'
-        # Define data path
-        data_path = PATH + '/train'
-        # print(data_path)
-        img_path = '/home/ming/workspace.old/unet/output'
-
-        dataframe = pandas.read_csv(os.path.join(PATH, 'train.csv'), usecols=[0, 1, 2])
-        #dataframe_test = pandas.read_csv(os.path.join(data_path, 'test.csv'), usecols=[0, 1])
-        def maleToInt(male):
-            if str(male) == 'True':
-                return 1
-            else:
-                return 0
-
-        def sexToInt(sex):
-            if str(sex) == 'M':
-                return 1
-            else:
-                return 0
-
-
-        dataframe.male = dataframe.male.apply(maleToInt)
-        #dataframe_test.sex = dataframe_test.sex.apply(sexToInt)
-        print(dataframe.head())
-        #print(dataframe_test.head())
-
-        def preprocessing (x, y = None, resizeTo = (224,224)):
-            # resize to intermediate size
-            x = resizeToFit (x, resizeTo)
-            x = pseudoRGB (x, "clahe")/255
-            if y is not None:
-                y = resizeToFit (y, resizeTo)
-                y = y.astype('float32')/255
-                return x, y
-            return x
-
-        def postprocessing (  x, y = None, method = "crop", visualize = False):
-            imageShape = (224, 224, 3)
-            if method == "resize":
-                x = resizeToFit (x, imageShape)
-                if y is not None:
-                    y = resizeToFit (y, imageShape)
-                    y = y.astype('float32')/255
-                    return x, y
-                return x
-                
-            if method == "crop":
-                offsetRow = (x.shape[0] - imageShape[0])//2
-                offsetCol = (x.shape[1] - imageShape[1])//2
-                x = x[offsetRow:offsetRow+imageShape[0], offsetCol:offsetCol + imageShape[1], :].copy()
-
-                if visualize == True:
-                    fig2 = plt.figure(figsize = (10,5)) # create a 5 x 5 figure 
-                    for i in range(0, 9):
-                        pyplot.subplot(1, 2,  1)
-                        pyplot.imshow(x)
-                    pyplot.show()
-
-                if y is not None:
-                    y = resizeToFit (y, imageShape)
-                    y = y.astype('float32')/255
-                    return x, y
-                return x       
-              
-        def clahe_augment(img):
-            clahe_low = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8,8))
-            clahe_medium = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-            clahe_high = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8,8))
-            img_low = clahe_low.apply(img)
-            img_medium = clahe_medium.apply(img)
-            img_high = clahe_high.apply(img)
-            augmented_img = np.array([img_low, img_medium, img_high])
-            augmented_img = np.swapaxes(augmented_img,0,1)
-            augmented_img = np.swapaxes(augmented_img,1,2)
-            return augmented_img
-
-        def contrast_augment(img):
-            clahe = cv2.createCLAHE(clipLimit=3., tileGridSize=(8,8))
-            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)  # convert from BGR to LAB color space
-            l, a, b = cv2.split(lab)  # split on 3 different channels
-            l2 = clahe.apply(l)  # apply CLAHE to the L-channel
-            lab = cv2.merge((l2,a,b))  # merge channels
-            augmented_img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)  # convert from LAB to BGR
-            return augmented_img
-
-
-
-        img_resize = (512, 512)
-        x = int((img_resize[0] - self.img_size[0]) / 2)
-        y = int((img_resize[1] - self.img_size[1]) / 2)
-        w = int(x + self.img_size[0])
-        h = int(y + self.img_size[1])
-
-        img_male_list = []
-        img_female_list = []
-        y_male = []
-        y_female = []
-        img_all_list = []
-        y_all = []
+        def preprocess_image(imgs):
+            imgs_p = np.ndarray((imgs.shape[0], img_rows, img_cols, 3), dtype=np.uint8)
+            for i in range(imgs.shape[0]):
+                #imgs_p[i] = resize(imgs[i], (img_rows, img_cols), preserve_range=True)
+                img = clahe_augment(img)
+                img = contrast_augment(img)
+                img = postprocessing(img, self.imageShape)
+                imgs_p[i] = img
+            imgs_p = imgs_p[..., np.newaxis]
+            return imgs_p
 
         if self.gender == 'M':
-            for index, row in dataframe.iterrows():
-                if row['male'] == 1:  # all the male
-                    filepath_temp = os.path.join(data_path + '/' + str(row['id']) + '.png')
-                    image = cv2.imread(filepath_temp, 0)
-                    
-                    img = resizeToFit(image, (512, 512))
-                    img = clahe_augment(img)
-                    img = contrast_augment(img)
-                    img = postprocessing(img)
-                    #cropped = img[x:w, y:h]      
-                    #img = preprocessing(image)
-                    img_male_list.append(img)
-                    y_male.append(row['boneage'])
+            X_train_m, y_train_m = load_train_data('M')
+            X_train_m = preprocess_image(X_train_m)
+            X_train_m = X_train_m.astype('float32')/255
 
-
-            img_male_data = np.array(img_male_list)
-            img_male_data = img_male_data.astype('float32')
-            img_male_data /=255
-
-            y_male = np.array(y_male)
-            y_male = y_male.astype('float32')
-            x_m, y_m = shuffle(img_male_data, y_male, random_state=2)
-            X_train_m = x_m
-            y_train_m = y_m
-
-            # Split the dataset (male)
-            #X_train_m, X_test_m, y_train_m, y_test_m = train_test_split(x_m, y_m, test_size=0.2, random_state=2)   
-            #X_valid_m, X_test_m, y_valid_m, y_test_m = train_test_split(X_test_m, y_test_m, test_size=0.5, random_state=2)
             print("Train samples (male): {}".format(X_train_m.shape))
-            #print("Validation samples (male): {}".format(X_valid_m.shape))
-            #print("Test samples (male): {}".format(X_test_m.shape))
             return X_train_m, y_train_m
 
         if self.gender == 'F':
-            for index, row in dataframe.iterrows():
-                if row['male'] == 0:  # all the female
-                    filepath_temp = os.path.join(img_path + '/' + str(row['id']) + '_new.png')
-                    image = cv2.imread(filepath_temp, -1)
-                    image = cv2.resize(image, img_resize)
-                    cropped = image[x:w, y:h]
-                    #blur = cv2.GaussianBlur(cropped,(5,5),0)
-                    #input_img = pseudoRGB(blur, "clahe", visualize=False)
-                    img_female_list.append(cropped)
-                    y_female.append(row['boneage'])
-            img_female_data = np.array(img_female_list)
-            img_female_data = img_female_data.astype('float32')
-            img_female_data /= 255
+            X_train_f, y_train_f = load_train_data('F')
+            X_train_f = preprocess_image(X_train_f)
+            X_train_f = X_train_f.astype('float32')/255
 
-            y_female = np.array(y_female)
-            y_female = y_female.astype('float32')
-
-            x_f, y_f = shuffle(img_female_data, y_female, random_state=2)
-
-            # Split the dataset (female)
-            X_train_f, X_test_f, y_train_f, y_test_f = train_test_split(x_f, y_f, test_size=0.2, random_state=2)
-           
             print("Train samples (female): {}".format(X_train_f.shape))
-            print("Test samples (female): {}".format(X_test_f.shape))
-            return X_train_f, y_train_f, X_test_f, y_test_f
+            return X_train_f, y_train_f
 
         if self.gender == 'ALL':
-            for index, row in dataframe.iterrows():
-                filepath_temp = os.path.join(img_path + '/' + str(row['id']) + '.png')
-                image = cv2.imread(filepath_temp, -1)
-                image = cv2.resize(image, img_resize)
-                cropped = image[x:w, y:h]
-                blur = cv2.GaussianBlur(cropped,(5,5),0)
-                input_img = pseudoRGB(blur, "clahe", visualize=False)
-                img_all_list.append(input_img)
-                y_all.append(row['boneage'])
-            img_all_data = np.array(img_all_list)
-            img_all_data = img_all_data.astype('float32')
-            img_all_data /= 255
+            X_train_all, y_train_all = load_train_data('ALL')
+            X_train_all = preprocess_image(X_train_all)
+            X_train_all = X_train_all.astype('float32')/255
 
-            y_all = np.array(y_all)
-            y_all = y_all.astype('float32')
-
-            x_all, y_all = shuffle(img_all_data, y_all, random_state=2)
-
-            # Split the dataset (female)
-            X_train_all, X_test_all, y_train_all, y_test_all = train_test_split(x_all, y_all, test_size=0.2, random_state=2)
-        
-            print("Train samples (all): {}".format(X_train_all.shape))
-            print("Test samples (all): {}".format(X_test_all.shape))
-            return X_train_all, y_train_all, X_test_all, y_test_all
+            print("Train samples (All): {}".format(X_train_all.shape))
+            return X_train_all, y_train_all
 
     def load(self):
         print("Creating model")
